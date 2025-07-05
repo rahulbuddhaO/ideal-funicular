@@ -1,35 +1,20 @@
-library(quantmod)
-library(PerformanceAnalytics)
-library(ggplot2)
-library(zoo)
-library(xts)
+This R project analyzes the performance and risk of an equal-weighted portfolio composed of three major tech stocks: Apple (AAPL), Microsoft (MSFT), and Google (GOOG) over the period from January 1, 2023 to January 1, 2024.
 
+🔧 What the script does:
+Retrieves historical adjusted closing prices using quantmod
 
-getSymbols(c("MSFT", "AAPL", "GOOG"), from = "2023-01-01", to = "2024-01-01")
+Calculates daily log returns for each stock
 
+Constructs an equal-weight portfolio (1/3 weight per stock)
 
-prices <- merge(AAPL[,"AAPL.Adjusted"], 
-                GOOG[,"GOOG.Adjusted"], 
-                MSFT[,"MSFT.Adjusted"], 
-                join = "inner")
-colnames(prices) <- c("AAPL", "GOOG", "MSFT")
+Computes annualized standard deviation (volatility) and Sharpe Ratio
 
+Merges individual and portfolio returns for comparison
 
-returns <- na.omit(diff(log(prices)))
+Plots daily return trajectories for all assets
 
-portfolio_returns_numeric_vector <- rowMeans(returns)
-portfolio_returns_eq_xts <- xts(portfolio_returns_numeric_vector, order.by = index(returns))
-colnames(portfolio_returns_eq_xts) <- "Equal Weight Portfolio"
+📈 Key Metrics:
+Annualized Volatility of each stock and the portfolio
 
-allreturns <- merge(portfolio_returns_eq_xts, returns)
-
-anual_sndrt <- sd.annualized(allreturns)
-
-print(anual_sndrt)
-
-anual_shrp <- SharpeRatio.annualized(allreturns, Rf = 0)
-print(anual_shrp)
-
-plot(allreturns, main = "Daily Log Returns: Portfolio vs. Individual Stocks", legend.loc = "bottomleft", auto.legend = TRUE)
-
+Annualized Sharpe Ratio (risk-adjusted return, assuming risk-free rate = 0)
 
