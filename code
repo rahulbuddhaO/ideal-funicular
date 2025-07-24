@@ -1,34 +1,125 @@
-library(quantmod)
-library(PerformanceAnalytics)
+{library(quantmod)
+library(readxl)
+library(writexl)
 library(ggplot2)
-library(zoo)
-library(xts)
+library(PerformanceAnalytics)
+library(alphavantager)
+library(TTR)
+
+      
+av_api_key("20UKVI4LK8R1EN4W")  
+  
+user_input <-(readline(prompt = "Enter stocks separated by commas (eg. AAPL):"))
+
+#we have assigned all the values to stocks_requested and also we haved added trimws= to trim some extra spaces, stresplit= to split the input into different strings, [[1]]= to give the first object of every list 
+stocks_requested <- trimws(strsplit(user_input,",")[[1]])
+
+portfolio_of_requested <- list()
+#drew the flow chart untill here in ipad 
+
+stock_from_date <- as.Date(readline(prompt = "Enter your from data in yyy-mm-dd :"))
+stock_to_date <- as.Date(readline(prompt = "Enter your to data in yyy-mm-dd :"))
+
+for (stock in stocks_requested) {
+
+  
+  stock_data <- av_get(symbol = stock, av_fun = "TIME_SERIES_DAILY", outputsize = "full")
+  stock_filtered <- subset(stock_data, timestamp >= stock_from_date & timestamp <= stock_to_date)
+  
+  stock_df <- data.frame(
+    Date = stock_filtered$timestamp,
+    Open = stock_filtered$open,
+    Close = stock_filtered$close,
+    High = stock_filtered$high
+  )
+  
+  portfolio_of_requested[[stock]] <- stock_df
+}
+
+y<- data.frame(portfolio_of_requested)
+
+#portfolio weightage system
+portfolio__weights <- 1/length(stocks_requested)
+print(portfolio__weights)
+
+portfolio_data <- data.frame(
+  
+  dates = portfolio_of_requested[[stocks_requested[1]]]$Date
+  
+)
+
+portfolio_data$Close <- 0  # Start with zeros
+
+# Add each stock's contribution
+for (stock in stocks_requested) {
+  portfolio_data$Close <- portfolio_data$Close + (portfolio_of_requested[[stock]]$Close * portfolio__weights)
+}
+
+portfolio_data$mavg <- SMA(portfolio_data$Close, n= 30)
+portfolio_data$SMA <- EMA(portfolio_data$Close, n= 30)
+
+#print(ggplot(data = stock_df, aes(x= Date, y= Close))+geom_line(size= 1)+labs(title = paste(user_input,"stock price"))+scale_color_manual(values = c("Close"= "green","mavg"= "red", "RSI"= "brown")))
+
+price_plot <- ggplot(data = portfolio_data, aes(x = dates)) +
+  geom_line(aes(y = Close, color = "Close"), size = 1) +
+  geom_line(aes(y = SMA, color = "SMA"), size = 1) +
+  geom_line(aes(y = mavg, color = "EMA"), size = 1) +
+  labs(title = paste("Stock Protfolio with Moving Averages"),
+       y = "Price ($)",
+       color = "Indicator") +
+  scale_color_manual(values = c("Close" = "black", "SMA" = "red", "EMA" = "green")) 
+print(price_plot)       
+
+retunrs <-  na.omit(Delt(portfolio_data$Close))
+
+standard_deviation <- sd(na.omit(retunrs))*100
+print(standard_deviation)
+avg_retuns <- (mean(na.omit(retunrs))*100)
+
+downside_dev <- as.numeric(DownsideDeviation(na.omit(retunrs), method = "full"))      
+downside_dev_val <-(downside_dev) * 100
+
+date_series <- portfolio_data$dates[-1]
+returns_xts <- xts(retunrs, order.by = date_series)
+
+# you should not hardcode risk free rate u should automate it.
+rf_rate <- (1 + 0.044)^(1/252) - 1
+sharpe <- SharpeRatio.annualized(returns_xts, Rf = rf_rate,scale = 252)
+
+max_drawdown <- maxDrawdown((R = returns_xts))
+Max_Drawdown_Of_Portfolio <- max_drawdown*100
+
+chart_of_drawndown <- chart.Drawdown(R= returns_xts)
+
+print(chart_of_drawndown)
+
+calmar_ratio <- CalmarRatio(R= returns_xts, scale = 252)
+
+retunrs_df <- data.frame(
+  
+  sl_no = zoo::index(retunrs),
+  retuns_now = as.numeric(retunrs)
+  )
+file_path <- paste0("C:/Users/Rahul buddha O/OneDrive/Desktop/R exports/", user_input, "_returns.xlsx")
+write_xlsx(retunrs_df, path = file_path)
 
 
-getSymbols(c("MSFT", "AAPL", "GOOG"), from = "2023-01-01", to = "2024-01-01")
+User_input_2 <- readline(prompt = "Do you want the stats of the stock ?")
 
+if (User_input_2== "Yes"){
+  cat("The Stock Standard deviation is :", standard_deviation,"\n")
+  cat("The stock average returns is :", avg_retuns, "\n")
+  cat("The Stock Downside Deviation is :",downside_dev_val,"\n")
+  cat("The Stock Sharpe ration :",sharpe,"\n")  
+  cat("The Stock Maximum Drawdown is :",Max_Drawdown_Of_Portfolio,"\n")
+  cat("The Portfolio's Calmar ratio is  :",calmar_ratio,"\n")
+  }
 
-prices <- merge(AAPL[,"AAPL.Adjusted"], 
-                GOOG[,"GOOG.Adjusted"], 
-                MSFT[,"MSFT.Adjusted"], 
-                join = "inner")
-colnames(prices) <- c("AAPL", "GOOG", "MSFT")
-
-
-returns <- na.omit(diff(log(prices)))
-
-portfolio_returns_numeric_vector <- rowMeans(returns)
-portfolio_returns_eq_xts <- xts(portfolio_returns_numeric_vector, order.by = index(returns))
-colnames(portfolio_returns_eq_xts) <- "Equal Weight Portfolio"
-
-allreturns <- merge(portfolio_returns_eq_xts, returns)
-
-anual_sndrt <- sd.annualized(allreturns)
-
-print(anual_sndrt)
-
-anual_shrp <- SharpeRatio.annualized(allreturns, Rf = 0)
-print(anual_shrp)
-
-plot(allreturns, main = "Daily Log Returns: Portfolio vs. Individual Stocks", legend.loc = "bottomleft", auto.legend = TRUE)
+#need to improve this by working the final score and then saying the verdict
+if (downside_dev_val >= 2){
+  cat("too much downside deviation stock not recommended","\n")
+} else {
+  cat("You can consider this stock","\n")
+}
+}
 
