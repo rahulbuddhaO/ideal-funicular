@@ -1,73 +1,135 @@
-{library(quantmod)
+library(quantmod)
 library(readxl)
 library(writexl)
 library(ggplot2)
 library(PerformanceAnalytics)
-library(alphavantager)
 library(TTR)
+library(BatchGetSymbols)
+library(xts)
+library(zoo)
 
-      
-av_api_key("20UKVI4LK8R1EN4W")  
-  
-user_input <-(readline(prompt = "Enter stocks separated by commas (eg. AAPL):"))
+user_input <- readline(prompt = "Enter stocks separated by commas (eg. AAPL, MSFT):")
+stocks_requested <- trimws(strsplit(user_input, ",")[[1]])
 
-#we have assigned all the values to stocks_requested and also we haved added trimws= to trim some extra spaces, stresplit= to split the input into different strings, [[1]]= to give the first object of every list 
-stocks_requested <- trimws(strsplit(user_input,",")[[1]])
+stock_weights_string <- readline(prompt = "Enter Stock Weights accordingly (in decimals, separated by commas): ")
+stock_weights <- as.numeric(unlist(strsplit(stock_weights_string, ",")))
 
+from_dates_string <- readline(prompt = "Enter From-Dates (yyyy-mm-dd) for each stock, separated by commas: ")
+stock_from_dates <- as.Date(unlist(strsplit(from_dates_string, ",")))
+stock_to_date <- as.Date(Sys.Date())
+
+if (length(stocks_requested) != length(stock_from_dates)) {
+  stop("Number of stocks and from-dates must match!")
+}
+
+if (length(stock_weights) != length(stocks_requested)) {
+  stop("Number of weights must match number of stocks!")
+}
+
+# Get data using BatchGetSymbols (Yahoo Finance backend)
+batch_data <- BatchGetSymbols(tickers = stocks_requested,
+                              first.date = min(stock_from_dates),
+                              last.date = stock_to_date,
+                              thresh.bad.data = 0.5,
+                              cache.folder = tempdir(), 
+                              do.cache = FALSE)
+
+stock_data_all <- batch_data$df.tickers
+
+# Create a list of cleaned stock data with individual from dates
 portfolio_of_requested <- list()
-#drew the flow chart untill here in ipad 
 
-stock_from_date <- as.Date(readline(prompt = "Enter your from data in yyy-mm-dd :"))
-stock_to_date <- as.Date(readline(prompt = "Enter your to data in yyy-mm-dd :"))
-
-for (stock in stocks_requested) {
-
+for (i in seq_along(stocks_requested)) {
+  stock <- stocks_requested[i]
+  from_date <- stock_from_dates[i]
   
-  stock_data <- av_get(symbol = stock, av_fun = "TIME_SERIES_DAILY", outputsize = "full")
-  stock_filtered <- subset(stock_data, timestamp >= stock_from_date & timestamp <= stock_to_date)
+  stock_data <- subset(stock_data_all, ticker == stock & ref.date >= from_date)
+  
+  if (nrow(stock_data) == 0) {
+    warning(paste("No data found for", stock))
+    next
+  }
   
   stock_df <- data.frame(
-    Date = stock_filtered$timestamp,
-    Open = stock_filtered$open,
-    Close = stock_filtered$close,
-    High = stock_filtered$high
+    Date = stock_data$ref.date,
+    Close = stock_data$price.adjusted
   )
   
   portfolio_of_requested[[stock]] <- stock_df
 }
 
-y<- data.frame(portfolio_of_requested)
+# Create merged dataset with proper alignment
+all_dates <- sort(unique(do.call(c, lapply(portfolio_of_requested, function(x) x$Date))))
 
-#portfolio weightage system
-portfolio__weights <- 1/length(stocks_requested)
-print(portfolio__weights)
+# Create a matrix to hold all stock prices
+stock_matrix <- matrix(NA, nrow = length(all_dates), ncol = length(stocks_requested))
+colnames(stock_matrix) <- stocks_requested
 
-portfolio_data <- data.frame(
-  
-  dates = portfolio_of_requested[[stocks_requested[1]]]$Date
-  
-)
-
-portfolio_data$Close <- 0  # Start with zeros
-
-# Add each stock's contribution
-for (stock in stocks_requested) {
-  portfolio_data$Close <- portfolio_data$Close + (portfolio_of_requested[[stock]]$Close * portfolio__weights)
+# Fill the matrix with stock prices
+for (i in seq_along(stocks_requested)) {
+  stock <- stocks_requested[i]
+  if (stock %in% names(portfolio_of_requested)) {
+    stock_data <- portfolio_of_requested[[stock]]
+    date_indices <- match(stock_data$Date, all_dates)
+    stock_matrix[date_indices, i] <- stock_data$Close
+  }
 }
 
-portfolio_data$mavg <- SMA(portfolio_data$Close, n= 30)
-portfolio_data$SMA <- EMA(portfolio_data$Close, n= 30)
+# Forward fill missing values for each stock
+for (i in 1:ncol(stock_matrix)) {
+  stock_matrix[, i] <- na.locf(stock_matrix[, i], na.rm = FALSE)
+}
 
-#print(ggplot(data = stock_df, aes(x= Date, y= Close))+geom_line(size= 1)+labs(title = paste(user_input,"stock price"))+scale_color_manual(values = c("Close"= "green","mavg"= "red", "RSI"= "brown")))
+#portfolio weightage system - use custom weights
+portfolio__weights <- stock_weights
+print(portfolio__weights)
 
-price_plot <- ggplot(data = portfolio_data, aes(x = dates)) +
-  geom_line(aes(y = Close, color = "Close"), size = 1) +
+# Calculate portfolio value (only for rows where all stocks have data)
+valid_rows <- complete.cases(stock_matrix)
+portfolio_values <- rowSums(stock_matrix * portfolio__weights, na.rm = TRUE)
+portfolio_values[!valid_rows] <- NA
+
+portfolio_data <- data.frame(
+  dates = all_dates,
+  Close = portfolio_values
+)
+
+portfolio_data <- na.omit(portfolio_data)
+
+portfolio_data$mavg <- SMA(portfolio_data$Close, n= 99)
+portfolio_data$SMA <- EMA(portfolio_data$Close, n= 99)
+
+# Get S&P 500 data for comparison
+sp500_date <- min(portfolio_data$dates)
+sp500_data_batch <- BatchGetSymbols(tickers = "^GSPC",
+                                    first.date = sp500_date,
+                                    last.date = stock_to_date,
+                                    thresh.bad.data = 0.5,
+                                    cache.folder = tempdir(), 
+                                    do.cache = FALSE)
+
+sp500_df <- data.frame(
+  dates = sp500_data_batch$df.tickers$ref.date,
+  sp500_close = sp500_data_batch$df.tickers$price.adjusted,
+  sp500_close_returns = Delt(sp500_data_batch$df.tickers$price.adjusted)
+  )
+
+
+# Merge portfolio and S&P 500 data
+merged_data <- merge(portfolio_data, sp500_df, by = "dates", all.x = TRUE)
+merged_data$sp500_close <- na.locf(merged_data$sp500_close, na.rm = FALSE)
+merged_data <- na.omit(merged_data)
+
+price_plot <- ggplot(data = merged_data, aes(x = dates)) +
+  geom_line(aes(y = Close, color = "Portfolio"), size = 1) +
   geom_line(aes(y = SMA, color = "SMA"), size = 1) +
   geom_line(aes(y = mavg, color = "EMA"), size = 1) +
-  labs(title = paste("Stock Protfolio with Moving Averages"),
+  geom_line(aes(y = sp500_close_returns, color = "S&P 500"), size = 1) +
+  labs(title = paste("Stock Portfolio vs S&P 500 with Moving Averages"),
        y = "Price ($)",
        color = "Indicator") +
-  scale_color_manual(values = c("Close" = "black", "SMA" = "red", "EMA" = "green")) 
+  scale_color_manual(values = c("Portfolio" = "black", "SMA" = "red", "EMA" = "green", "S&P 500" = "blue")) +
+  theme_minimal()
 print(price_plot)       
 
 retunrs <-  na.omit(Delt(portfolio_data$Close))
@@ -89,20 +151,23 @@ sharpe <- SharpeRatio.annualized(returns_xts, Rf = rf_rate,scale = 252)
 max_drawdown <- maxDrawdown((R = returns_xts))
 Max_Drawdown_Of_Portfolio <- max_drawdown*100
 
-chart_of_drawndown <- chart.Drawdown(R= returns_xts)
-
-print(chart_of_drawndown)
+# FIXED: Properly display the drawdown chart
+chart.Drawdown(R = returns_xts, main = "Portfolio Drawdown Analysis")
 
 calmar_ratio <- CalmarRatio(R= returns_xts, scale = 252)
 
 retunrs_df <- data.frame(
-  
   sl_no = zoo::index(retunrs),
   retuns_now = as.numeric(retunrs)
-  )
-file_path <- paste0("C:/Users/Rahul buddha O/OneDrive/Desktop/R exports/", user_input, "_returns.xlsx")
-write_xlsx(retunrs_df, path = file_path)
+)
 
+export_dir <- "C:/Users/Rahul buddha O/OneDrive/Desktop/R exports"
+if (!dir.exists(export_dir)) {
+  dir.create(export_dir, recursive = TRUE)
+}
+
+file_path <-paste0(export_dir, "/portfolio_returns.xlsx")
+write_xlsx(retunrs_df, path = file_path)
 
 User_input_2 <- readline(prompt = "Do you want the stats of the stock ?")
 
@@ -113,7 +178,7 @@ if (User_input_2== "Yes"){
   cat("The Stock Sharpe ration :",sharpe,"\n")  
   cat("The Stock Maximum Drawdown is :",Max_Drawdown_Of_Portfolio,"\n")
   cat("The Portfolio's Calmar ratio is  :",calmar_ratio,"\n")
-  }
+}
 
 #need to improve this by working the final score and then saying the verdict
 if (downside_dev_val >= 2){
@@ -121,5 +186,3 @@ if (downside_dev_val >= 2){
 } else {
   cat("You can consider this stock","\n")
 }
-}
-
